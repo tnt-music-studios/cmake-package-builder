@@ -11,6 +11,9 @@ include(PackageBuilder)
 
 message(STATUS "PackageBuilder module was successfully found and included.")
 
+# Another package's project, configured first in the same build tree.
+add_subdirectory(other_package)
+
 # A three-executable sample whose component list leaves the game out, so the package carries the
 # GUI app and the command-line tool, beside the package's Start Menu links. The app is the
 # PRIMARY_TARGET, so it names the package and gets the desktop shortcut. The tool has no .desktop
@@ -18,24 +21,25 @@ message(STATUS "PackageBuilder module was successfully found and included.")
 # no Start Menu entry or desktop shortcut, but puts the bin directory on PATH. conanfile.py checks
 # that the configure warns about neither, that the archive holds the app, the tool and the MSVC C++
 # runtime and not the game, that the app's and tool's runtime dependencies install in Runtime while
-# the game's stay in Game, and on Windows that the one-click installer compiles. conanfile.py also
-# configures once with an empty vendor, the same path as passing no VENDOR, and without the tool.
-set(PACKAGE_BUILDER_TEST_VENDOR
-    "Test Vendor"
-    CACHE STRING "The package's VENDOR; empty checks a package that names no publisher")
-set(PACKAGE_BUILDER_TEST_COMPONENTS
-    "Runtime;Tool"
-    CACHE STRING "The packaged components; Runtime alone checks a package of the GUI app only")
-package_create(
-    VENDOR
-    "${PACKAGE_BUILDER_TEST_VENDOR}"
-    PRIMARY_TARGET
-    test_app
-    MENU_LINKS
-    "bin/guide.html"
-    "Test Guide"
-    "https://example.com/tool"
-    "Test Tool Website")
+# the game's stay in Game, and on Windows that the one-click installer compiles and writes the
+# install directory into the uninstall entry. conanfile.py also configures the bare sample once: a
+# package of the GUI app alone whose package_create() passes no argument, so it names no publisher
+# and no Start Menu links, infers the app as its PRIMARY_TARGET, and inherits nothing of the other
+# package's (other_package/CMakeLists.txt).
+option(PACKAGE_BUILDER_TEST_BARE "Package the GUI app alone, passing package_create() no argument"
+       OFF)
+if(PACKAGE_BUILDER_TEST_BARE)
+    set(_test_vendor "")
+    set(_test_components Runtime)
+    set(_test_menu_links "")
+    package_create()
+else()
+    set(_test_vendor "Test Vendor")
+    set(_test_components Runtime Tool)
+    set(_test_menu_links "bin/guide.html" "Test Guide" "https://example.com/tool"
+                         "Test Tool Website")
+    package_create(VENDOR "${_test_vendor}" PRIMARY_TARGET test_app MENU_LINKS ${_test_menu_links})
+endif()
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/test-game.desktop"
      "[Desktop Entry]\nType=Application\nName=Test game\nExec=test-game\n")
@@ -56,7 +60,7 @@ set_target_properties(test_app PROPERTIES OUTPUT_NAME test-app)
 # The GUI subsystem defaults to a WinMain entry; keep the shared plain main() under MSVC.
 target_link_options(test_app PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/ENTRY:mainCRTStartup>)
 
-set(PACKAGE_BUILDER_CPACK_COMPONENTS ${PACKAGE_BUILDER_TEST_COMPONENTS})
+set(PACKAGE_BUILDER_CPACK_COMPONENTS ${_test_components})
 package_install()
 
 function(_test_expect what actual expected)
@@ -73,7 +77,7 @@ _test_expect("tool component" "${_tool_component}" "Tool")
 # Reads the generated CPack configuration in a scope of its own and checks the package it describes.
 function(_test_package_configuration)
     include("${CMAKE_BINARY_DIR}/CPackConfig.cmake")
-    _test_expect("components" "${CPACK_COMPONENTS_ALL}" "${PACKAGE_BUILDER_TEST_COMPONENTS}")
+    _test_expect("components" "${CPACK_COMPONENTS_ALL}" "${_test_components}")
     _test_expect("Runtime required" "${CPACK_COMPONENT_RUNTIME_REQUIRED}" "TRUE")
     _test_expect("file name" "${CPACK_PACKAGE_FILE_NAME}"
                  "PackageBuilderTest-1.0.0-${CPACK_SYSTEM_NAME}")
@@ -81,9 +85,9 @@ function(_test_package_configuration)
     if(NOT DEFINED CPACK_PACKAGE_VENDOR)
         message(FATAL_ERROR "CPACK_PACKAGE_VENDOR is undefined, so CPack names a default vendor")
     endif()
-    _test_expect("vendor" "${CPACK_PACKAGE_VENDOR}" "${PACKAGE_BUILDER_TEST_VENDOR}")
+    _test_expect("vendor" "${CPACK_PACKAGE_VENDOR}" "${_test_vendor}")
     if(WIN32)
-        if(PACKAGE_BUILDER_TEST_VENDOR)
+        if(_test_vendor)
             _test_expect("install directory" "${CPACK_PACKAGE_INSTALL_DIRECTORY}"
                          "Test Vendor\\Test App")
         else()
@@ -91,19 +95,21 @@ function(_test_package_configuration)
         endif()
         _test_expect("registry key" "${CPACK_PACKAGE_INSTALL_REGISTRY_KEY}" "Test App")
 
+        # Neither the package nor the app names an icon, so the installer carries none of its own.
+        _test_expect("installer icon" "${CPACK_NSIS_MUI_ICON}" "")
+
         # Only the GUI app gets a Start Menu entry: the console tool gets none, and nothing of the
         # unlisted game's appears. The package's links join the app's entry.
         _test_expect("executables" "${CPACK_PACKAGE_EXECUTABLES}" "test-app;Test App")
-        _test_expect("menu links" "${CPACK_NSIS_MENU_LINKS}"
-                     "bin/guide.html;Test Guide;https://example.com/tool;Test Tool Website")
+        _test_expect("menu links" "${CPACK_NSIS_MENU_LINKS}" "${_test_menu_links}")
 
         # The uninstaller removes the vendor folder it created once it is empty, and with no vendor
         # never touches the install directory's parent.
         string(FIND "${CPACK_NSIS_DELETE_ICONS_EXTRA}" "RMDir \"$INSTDIR\\..\"" _found)
-        if(PACKAGE_BUILDER_TEST_VENDOR AND _found EQUAL -1)
+        if(_test_vendor AND _found EQUAL -1)
             message(FATAL_ERROR "the uninstaller keeps the vendor folder:\n"
                                 "${CPACK_NSIS_DELETE_ICONS_EXTRA}")
-        elseif(NOT PACKAGE_BUILDER_TEST_VENDOR AND NOT _found EQUAL -1)
+        elseif(NOT _test_vendor AND NOT _found EQUAL -1)
             message(FATAL_ERROR "the uninstaller removes the parent of a vendor-less install:\n"
                                 "${CPACK_NSIS_DELETE_ICONS_EXTRA}")
         endif()
@@ -121,7 +127,7 @@ function(_test_package_configuration)
 
         # The packaged tool puts the bin directory on PATH, through the plugin the installed
         # PackageBuilder carries; the GUI app alone leaves PATH alone.
-        if("Tool" IN_LIST PACKAGE_BUILDER_TEST_COMPONENTS)
+        if("Tool" IN_LIST _test_components)
             _test_expect("PATH modification" "${CPACK_NSIS_MODIFY_PATH}" "ON")
         else()
             _test_expect("PATH modification" "${CPACK_NSIS_MODIFY_PATH}" "OFF")

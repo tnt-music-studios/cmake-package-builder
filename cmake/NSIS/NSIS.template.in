@@ -9,7 +9,8 @@
 ;   - Desktop shortcuts are handled unconditionally via CPACK_NSIS_CREATE_ICONS_EXTRA.
 ;   - No Software\<vendor>\<key> registry key: CMake's template stores the install directory and
 ;     the Start Menu page's folder there, and reads back only the folder, for a page this
-;     installer does not have.
+;     installer does not have. The install directory is the uninstall entry's InstallLocation
+;     instead, the standard value through which another program finds an installed one.
 ;   - No component selection to react to or modify later: CMake's .onSelChange dependency
 ;     handling and its AddRemove.exe "Modify" entry serve the Components page alone.
 ;   - No Uninstall shortcut: Windows uninstalls from Apps & features. A Start Menu folder that
@@ -325,6 +326,9 @@ Section "-Core installation"
   Call ConditionalAddToRegistry
   Push "UninstallString"
   Push "$\"$INSTDIR\@CPACK_NSIS_UNINSTALL_NAME@.exe$\""
+  Call ConditionalAddToRegistry
+  Push "InstallLocation"
+  Push "$INSTDIR"
   Call ConditionalAddToRegistry
   Push "NoRepair"
   Push "1"

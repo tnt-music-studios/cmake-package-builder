@@ -27,14 +27,14 @@ Add the following to your `conanfile.py`:
 
 ```python
 def requirements(self):
-    self.requires("cmake-package-builder/2.1.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+    self.requires("cmake-package-builder/3.0.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 ```
 
 Or in `conanfile.txt`:
 
 ```ini
 [requires]
-cmake-package-builder/2.1.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+cmake-package-builder/3.0.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 
 [generators]
 CMakeDeps
@@ -65,7 +65,7 @@ include(FetchContent)
 FetchContent_Declare(
     PackageBuilder
     GIT_REPOSITORY https://github.com/tnt-music-studios/cmake-package-builder
-    GIT_TAG v2.1.0
+    GIT_TAG v3.0.0
 )
 FetchContent_MakeAvailable(PackageBuilder)
 
@@ -111,7 +111,7 @@ include(PackageBuilder)
 
 ### Create The Package
 
-**Required.** Must be called before any other PackageBuilder functions.
+**Required.** Must be called, once per project, before any other PackageBuilder function in that project.
 
 ```cmake
 package_create()
@@ -136,7 +136,9 @@ It also takes the package's identity, all optional:
 | `MENU_LINKS` | See [Start Menu links](#start-menu-links). |
 | `VERSION` | See above. |
 
-The Windows install directory is `<VENDOR>\<DISPLAY_NAME>` under Program Files and the registry key is `<DISPLAY_NAME>`. Neither carries the version, so a new version installs over the last one rather than beside it. The uninstaller removes the `<VENDOR>` folder once the vendor's last product is gone, in both installer modes:
+A project's package is its own: what `package_create()` records is keyed by `PROJECT_NAME`, as the project's registered targets are, so every PackageBuilder function reads its own project's package and nothing another project's `package_create()` passed reaches it. An argument a project does not pass takes its default. A second `package_create()` in one project is a configure error. A workspace that configures several projects in one build tree gives each its own `package_create()`, and only one of them can package (see [Generate Package Install Logic](#generate-package-install-logic)).
+
+The Windows install directory is `<VENDOR>\<DISPLAY_NAME>` under Program Files and the registry key is `<DISPLAY_NAME>`. Neither carries the version, so a new version installs over the last one rather than beside it. The one-click installer's *Apps & features* entry names the install directory as its `InstallLocation`, the standard value through which another program finds an installed one; the classic wizard, CMake's own template, stores it under `Software\<VENDOR>\<DISPLAY_NAME>` instead. The uninstaller removes the `<VENDOR>` folder once the vendor's last product is gone, in both installer modes:
 
 ```cmake
 # Installs to "Program Files\My Company\My Suite"
@@ -269,6 +271,19 @@ Downstream projects can then consume your package:
 ```cmake
 find_package(MyProject REQUIRED)
 target_link_libraries(myapp PRIVATE MyProject::mylib)
+```
+
+A build tree makes one package, so `package_install()` may be called once per build tree: a second
+call, from any project, is a configure error naming both projects. CPack writes one
+`CPackConfig.cmake` per build tree and a package installs every install rule of the tree, so a
+second package would carry the first one's files. A repository of several products configures each
+product in a build tree of its own, and a subproject that packages itself when built alone guards
+its call:
+
+```cmake
+if(PROJECT_IS_TOP_LEVEL)
+    package_install()
+endif()
 ```
 
 ---
@@ -628,10 +643,10 @@ Then set `Icon=my_app` in your `.desktop` file, without a file extension.
 
 ## Versioning
 
-From 2.0.0 on, every breaking change bumps the major version, so a pin to any 2.x release can move
-to a later 2.x without changes to the consuming project. The installed
+From 2.0.0 on, every breaking change bumps the major version, so a pin to any 3.x release can move
+to a later 3.x without changes to the consuming project. The installed
 `PackageBuilderConfigVersion.cmake` uses `SameMajorVersion` to the same effect:
-`find_package(PackageBuilder 2)` accepts any 2.x and no 1.x.
+`find_package(PackageBuilder 3)` accepts any 3.x and no 2.x.
 
 2.0.3 is a bug fix within that promise: a command-line (console) executable no longer gets a Windows
 Start Menu entry or default desktop shortcut, which only opened a console window, and a
@@ -651,6 +666,13 @@ project: a package that holds a command-line tool adds its `bin` directory to th
 entry no longer leaves a Start Menu folder holding only an Uninstall shortcut, which the one-click
 installer no longer creates. The one-click installer is now a Unicode NSIS installer.
 
+3.0.0 makes a project's package its own and one package per build tree a rule. What
+`package_create()` records is keyed by the project, so nothing another project's call passed reaches
+it, where every call in a build tree had shared one identity. A second `package_create()` in one
+project and a second `package_install()` in one build tree are configure errors. The one-click
+installer's *Apps & features* entry now carries `InstallLocation`, the install directory (see
+[Create The Package](#create-the-package)).
+
 Before 2.0.0, two minor releases broke existing builds:
 
 - **1.6.0** renamed `package_write_version_resource()`, added in 1.5.0, to
@@ -664,6 +686,21 @@ Before 2.0.0, two minor releases broke existing builds:
 
 1.8.0 broke only a configuration 1.7.0 had just made possible: a component list that packages a
 target's `COMPONENT` must name `Runtime` too.
+
+### Upgrading to 3.0.0
+
+A project that calls `package_create()` and `package_install()` once each needs no change. Otherwise:
+
+- A build tree that called `package_install()` more than once now fails to configure. Its packages
+  were never separate: each installed every install rule of the tree. Configure each package in a
+  build tree of its own, or guard a subproject's call with `PROJECT_IS_TOP_LEVEL` (see
+  [Generate Package Install Logic](#generate-package-install-logic)).
+- A project's package is its own: nothing another project's `package_create()` passed reaches it.
+  A project that calls a PackageBuilder function now calls `package_create()` itself; one that
+  relied on another project's call fails to configure, where its targets went to a registry no
+  `package_install()` read and its resource scripts carried the other project's version.
+- A second `package_create()` in one project is a configure error: pass every value to the one
+  call.
 
 ### Upgrading to 2.0.0
 

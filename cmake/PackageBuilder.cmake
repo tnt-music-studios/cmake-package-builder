@@ -3,13 +3,13 @@ include_guard(GLOBAL)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
-# Fails fast if package_create() has not been called before other PackageBuilder entry points.
+# Fails fast if the current project has not called package_create() before other PackageBuilder
+# entry points. Each project's package is its own, so another project's call does not count.
 function(_package_check_initialized)
-    get_property(package_initialized GLOBAL PROPERTY PACKAGE_INITIALIZED)
+    get_property(package_initialized GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_CREATED)
     if(NOT package_initialized)
-        message(
-            FATAL_ERROR "package_create() must be called before all other PackageBuilder functions."
-        )
+        message(FATAL_ERROR "package_create() must be called in project ${PROJECT_NAME} before all "
+                            "other PackageBuilder functions.")
     endif()
 endfunction()
 
@@ -131,10 +131,10 @@ function(_package_get_shortcut_label out_var target)
         PARENT_SCOPE)
 endfunction()
 
-# Validates that the project has the minimum metadata needed for packaging and marks the module as
-# initialized. Accepts optional package-level metadata: PRIMARY_TARGET designates the executable
-# that represents the package's Windows identity (display name, installer icon, ARP icon);
-# DISPLAY_NAME overrides the package name derived from PRIMARY_TARGET; ICON overrides the
+# Validates that the project has the minimum metadata needed for packaging and records its package,
+# once per project. Accepts optional package-level metadata: PRIMARY_TARGET designates the
+# executable that represents the package's Windows identity (display name, installer icon, ARP
+# icon); DISPLAY_NAME overrides the package name derived from PRIMARY_TARGET; ICON overrides the
 # installer/ARP icon; DESKTOP_LINKS controls which GUI executables receive desktop shortcuts;
 # MENU_LINKS adds Windows Start Menu links as <path> <label> pairs, the path relative to the install
 # directory or a URL; VERSION overrides the package version, which defaults to PROJECT_VERSION, with
@@ -145,37 +145,33 @@ function(package_create)
         PARSE_ARGV 0 PACKAGE_CREATE "" "PRIMARY_TARGET;DISPLAY_NAME;ICON;VERSION;VENDOR"
         "DESKTOP_LINKS;MENU_LINKS")
 
-    if(PACKAGE_CREATE_MENU_LINKS)
-        list(LENGTH PACKAGE_CREATE_MENU_LINKS _menu_link_count)
-        math(EXPR _menu_link_unpaired "${_menu_link_count} % 2")
-        if(_menu_link_unpaired)
-            message(FATAL_ERROR "package_create(MENU_LINKS) must be <path> <label> pairs: "
-                                "${PACKAGE_CREATE_MENU_LINKS}")
-        endif()
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_MENU_LINKS "${PACKAGE_CREATE_MENU_LINKS}")
+    # A project describes one package, so it states its identity once.
+    get_property(_package_created GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_CREATED)
+    if(_package_created)
+        message(FATAL_ERROR "package_create() was already called in project ${PROJECT_NAME}.")
     endif()
 
-    if(PACKAGE_CREATE_VENDOR)
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_VENDOR "${PACKAGE_CREATE_VENDOR}")
+    list(LENGTH PACKAGE_CREATE_MENU_LINKS _menu_link_count)
+    math(EXPR _menu_link_unpaired "${_menu_link_count} % 2")
+    if(_menu_link_unpaired)
+        message(FATAL_ERROR "package_create(MENU_LINKS) must be <path> <label> pairs: "
+                            "${PACKAGE_CREATE_MENU_LINKS}")
     endif()
 
-    if(PACKAGE_CREATE_PRIMARY_TARGET)
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_PRIMARY_TARGET
-                                     "${PACKAGE_CREATE_PRIMARY_TARGET}")
-    endif()
-
-    if(PACKAGE_CREATE_DISPLAY_NAME)
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_DISPLAY_NAME "${PACKAGE_CREATE_DISPLAY_NAME}")
-    endif()
-
-    if(PACKAGE_CREATE_ICON)
-        _package_make_paths_absolute(_icon_abs "${PACKAGE_CREATE_ICON}")
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_ICON "${_icon_abs}")
-    endif()
-
+    # A project's package is its own: every package-level property is keyed by the project, as its
+    # registered targets are, so nothing another project's package_create() passed reaches it.
+    # DESKTOP_LINKS alone is set only when passed, since an empty list (no desktop shortcuts)
+    # differs from none given (the PRIMARY_TARGET's).
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_MENU_LINKS "${PACKAGE_CREATE_MENU_LINKS}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VENDOR "${PACKAGE_CREATE_VENDOR}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_PRIMARY_TARGET
+                                 "${PACKAGE_CREATE_PRIMARY_TARGET}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_DISPLAY_NAME
+                                 "${PACKAGE_CREATE_DISPLAY_NAME}")
+    _package_make_paths_absolute(_icon_abs "${PACKAGE_CREATE_ICON}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_ICON "${_icon_abs}")
     if(DEFINED PACKAGE_CREATE_DESKTOP_LINKS)
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_DESKTOP_LINKS_DEFINED TRUE)
-        set_property(GLOBAL PROPERTY PACKAGE_BUILDER_DESKTOP_LINKS
+        set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_DESKTOP_LINKS
                                      "${PACKAGE_CREATE_DESKTOP_LINKS}")
     endif()
 
@@ -200,7 +196,7 @@ function(package_create)
                     "(${PROJECT_VERSION}) plus an optional SemVer pre-release or build suffix.")
         endif()
     endif()
-    set_property(GLOBAL PROPERTY PACKAGE_BUILDER_VERSION "${PACKAGE_CREATE_VERSION}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VERSION "${PACKAGE_CREATE_VERSION}")
 
     if(NOT PROJECT_DESCRIPTION)
         message(
@@ -214,7 +210,7 @@ function(package_create)
         )
     endif()
 
-    set_property(GLOBAL PROPERTY PACKAGE_INITIALIZED TRUE)
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_CREATED TRUE)
 endfunction()
 
 # Registers a target created outside PackageBuilder so it participates in install/export/CPack
@@ -237,7 +233,7 @@ endfunction()
 function(package_write_resource_script out_var target)
     _package_check_initialized()
 
-    get_property(_package_version GLOBAL PROPERTY PACKAGE_BUILDER_VERSION)
+    get_property(_package_version GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VERSION)
     set(_numeric_version)
     foreach(_part IN ITEMS MAJOR MINOR PATCH TWEAK)
         if("${PROJECT_VERSION_${_part}}" STREQUAL "")
@@ -381,8 +377,25 @@ endfunction()
 # a COMPONENT out keeps that target's files out of every package while it still builds. A packaged
 # target's runtime dependencies ship in Runtime, so a list that packages a COMPONENT must name
 # Runtime too.
+#
+# ONE PACKAGE PER BUILD TREE
+# --------------------------
+# CPack writes one CPackConfig.cmake per build tree, and a package installs every install rule of
+# the tree, filtered only by component. A second package in the same tree would therefore carry the
+# first one's files, or replace its configuration, so a second package_install() call is an error.
 function(package_install)
     _package_check_initialized()
+
+    get_property(_installed_project GLOBAL PROPERTY PACKAGE_BUILDER_INSTALLED_PROJECT)
+    if(_installed_project)
+        message(
+            FATAL_ERROR
+                "PackageBuilder: package_install() for ${PROJECT_NAME} follows the one for "
+                "${_installed_project}, and a build tree makes one package. Configure each package "
+                "in a build tree of its own, or guard the subproject's package_install() with "
+                "PROJECT_IS_TOP_LEVEL.")
+    endif()
+    set_property(GLOBAL PROPERTY PACKAGE_BUILDER_INSTALLED_PROJECT "${PROJECT_NAME}")
 
     get_property(targets GLOBAL PROPERTY ${PROJECT_NAME}_TARGETS)
     _package_collect_runtime_targets(runtime_targets ${targets})
@@ -634,8 +647,8 @@ function(package_install)
     # NSIS, DEB, DragNDrop, etc.) from the install() rules defined above. Only install() rules whose
     # COMPONENT is listed in CPACK_COMPONENTS_ALL are included in the generated package.
     # -------------------------------------------------------------------
-    get_property(_package_version GLOBAL PROPERTY PACKAGE_BUILDER_VERSION)
-    get_property(_vendor GLOBAL PROPERTY PACKAGE_BUILDER_VENDOR)
+    get_property(_package_version GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VERSION)
+    get_property(_vendor GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VENDOR)
     set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
     # Always set, so a package without a VENDOR names no publisher instead of CPack's default
     # "Humanity": the Windows Publisher entry is skipped when empty.
@@ -686,8 +699,11 @@ function(package_install)
     set(CPACK_PROJECT_CONFIG_FILE
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PackageBuilderCPackOptions.cmake")
 
-    get_property(_desktop_links_defined GLOBAL PROPERTY PACKAGE_BUILDER_DESKTOP_LINKS_DEFINED)
-    get_property(_desktop_link_targets GLOBAL PROPERTY PACKAGE_BUILDER_DESKTOP_LINKS)
+    get_property(
+        _desktop_links_defined GLOBAL
+        PROPERTY ${PROJECT_NAME}_PACKAGE_DESKTOP_LINKS
+        SET)
+    get_property(_desktop_link_targets GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_DESKTOP_LINKS)
 
     if(WIN32)
         set(CPACK_GENERATOR "ZIP;NSIS")
@@ -717,7 +733,7 @@ function(package_install)
         # PRIMARY_TARGET is explicit and must be packaged; single-exe packages infer it
         # automatically. Multi-exe packages without PRIMARY_TARGET emit a warning.
         # -------------------------------------------------------------------
-        get_property(_primary_target GLOBAL PROPERTY PACKAGE_BUILDER_PRIMARY_TARGET)
+        get_property(_primary_target GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_PRIMARY_TARGET)
         if(_primary_target AND NOT _primary_target IN_LIST _exe_targets)
             message(
                 FATAL_ERROR
@@ -743,7 +759,7 @@ function(package_install)
         # Resolve package display name:
         # Explicit DISPLAY_NAME > PRIMARY_TARGET's display name > PROJECT_NAME
         # -------------------------------------------------------------------
-        get_property(_pkg_display_name GLOBAL PROPERTY PACKAGE_BUILDER_DISPLAY_NAME)
+        get_property(_pkg_display_name GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_DISPLAY_NAME)
         if(NOT _pkg_display_name AND _primary_target)
             _package_get_shortcut_label(_pkg_display_name ${_primary_target})
         endif()
@@ -767,7 +783,7 @@ function(package_install)
         # Package-level ICON overrides target-level icon. If PRIMARY_TARGET has no icon, leave
         # fields unset.
         # -------------------------------------------------------------------
-        get_property(_pkg_icon GLOBAL PROPERTY PACKAGE_BUILDER_ICON)
+        get_property(_pkg_icon GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_ICON)
         if(_pkg_icon)
             set(CPACK_NSIS_MUI_ICON "${_pkg_icon}")
             set(CPACK_NSIS_MUI_UNIICON "${_pkg_icon}")
@@ -839,7 +855,7 @@ function(package_install)
                     "PackageBuilder: pass Start Menu links to package_create(MENU_LINKS) instead "
                     "of setting CPACK_NSIS_MENU_LINKS.")
         endif()
-        get_property(CPACK_NSIS_MENU_LINKS GLOBAL PROPERTY PACKAGE_BUILDER_MENU_LINKS)
+        get_property(CPACK_NSIS_MENU_LINKS GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_MENU_LINKS)
 
         # -------------------------------------------------------------------
         # Resolve desktop shortcut targets:

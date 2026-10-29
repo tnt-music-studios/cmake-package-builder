@@ -20,24 +20,52 @@ class CMakePackageBuilderTestConan(ConanFile):
         cmake_layout(self)
 
     def build(self):
-        # The sample names the GUI app as its PRIMARY_TARGET, so the configure must not warn that
-        # the package lacks one; nor, on Linux, that the app or the command-line tool has no
-        # .desktop file. CMake writes warnings to stderr, which is captured to check and then
-        # passed through. A first configure with an empty vendor and no tool checks the
-        # configuration of a package that names no publisher and holds the GUI app alone; the cache
-        # keeps both variables, so the second sets them back.
+        # A build tree makes one package, so when the other package calls package_install() too,
+        # the sample's own call is the second and the configure must fail, naming both projects.
+        # It runs first, before a configure that succeeds generates the tree the build uses. CMake
+        # wraps a long error message across lines, so its whitespace is folded before the check.
+        # The cache keeps every variable a configure sets, so each configure sets them all.
         cmake = CMake(self)
+        stderr = StringIO()
+        try:
+            cmake.configure(
+                variables={
+                    "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "ON",
+                    "PACKAGE_BUILDER_TEST_BARE": "OFF",
+                },
+                stderr=stderr,
+            )
+        except ConanException:
+            pass
+        else:
+            raise ConanException("A second package_install() in one build tree configured.")
+        sys.stderr.write(stderr.getvalue())
+        if (
+            "package_install() for PackageBuilderTest follows the one for PackageBuilderOtherTest"
+            not in " ".join(stderr.getvalue().split())
+        ):
+            raise ConanException(
+                "The second package_install() failed without naming both projects."
+            )
+
+        # The bare sample checks the configuration of a package whose package_create() passes no
+        # argument and that holds the GUI app alone.
         cmake.configure(
             variables={
-                "PACKAGE_BUILDER_TEST_VENDOR": "",
-                "PACKAGE_BUILDER_TEST_COMPONENTS": "Runtime",
+                "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "OFF",
+                "PACKAGE_BUILDER_TEST_BARE": "ON",
             }
         )
+
+        # The full sample names the GUI app as its PRIMARY_TARGET, so the configure must not warn
+        # that the package lacks one; nor, on Linux, that the app or the command-line tool has no
+        # .desktop file. CMake writes warnings to stderr, which is captured to check and then
+        # passed through.
         stderr = StringIO()
         cmake.configure(
             variables={
-                "PACKAGE_BUILDER_TEST_VENDOR": "Test Vendor",
-                "PACKAGE_BUILDER_TEST_COMPONENTS": "Runtime;Tool",
+                "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "OFF",
+                "PACKAGE_BUILDER_TEST_BARE": "OFF",
             },
             stderr=stderr,
         )
@@ -51,7 +79,7 @@ class CMakePackageBuilderTestConan(ConanFile):
     # The configure checks the package configuration; this checks the archive CPack stages from
     # it: one file named CPACK_PACKAGE_FILE_NAME, holding the listed app and tool and not the
     # unlisted game, and with a dynamically linked MSVC runtime, that runtime beside them. On
-    # Windows it also compiles the one-click installer.
+    # Windows it also compiles the one-click installer and checks the script it compiled.
     def test(self):
         self.run(f"cpack -G ZIP -C {self.settings.build_type}", cwd=self.build_folder)
         archives = list(Path(self.build_folder).glob("*.zip"))
@@ -84,6 +112,15 @@ class CMakePackageBuilderTestConan(ConanFile):
                 raise ConanException(
                     f"Expected one PackageBuilderTest installer, found {installers}."
                 )
+
+            # The uninstall entry carries the install directory as InstallLocation, through which
+            # another program finds the installation.
+            scripts = list(Path(self.build_folder).glob("_CPack_Packages/*/NSIS/project.nsi"))
+            if len(scripts) != 1 or not re.search(
+                r'Push "InstallLocation"\s+Push "\$INSTDIR"\s+Call ConditionalAddToRegistry',
+                scripts[0].read_text(),
+            ):
+                raise ConanException(f"The installer writes no InstallLocation: {scripts}")
 
         # No executable links a library the resolver keeps, so the archive cannot show where their
         # dependencies go; the install script names the component of each dependency rule. Each
