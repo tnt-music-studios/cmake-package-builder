@@ -20,55 +20,18 @@ class CMakePackageBuilderTestConan(ConanFile):
         cmake_layout(self)
 
     def build(self):
-        # A build tree makes one package, so when the other package calls package_install() too,
-        # the sample's own call is the second and the configure must fail, naming both projects.
-        # It runs first, before a configure that succeeds generates the tree the build uses. CMake
-        # wraps a long error message across lines, so its whitespace is folded before the check.
-        # The cache keeps every variable a configure sets, so each configure sets them all.
-        cmake = CMake(self)
-        stderr = StringIO()
-        try:
-            cmake.configure(
-                variables={
-                    "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "ON",
-                    "PACKAGE_BUILDER_TEST_BARE": "OFF",
-                },
-                stderr=stderr,
-            )
-        except ConanException:
-            pass
-        else:
-            raise ConanException("A second package_install() in one build tree configured.")
-        sys.stderr.write(stderr.getvalue())
-        if (
-            "package_install() for PackageBuilderTest follows the one for PackageBuilderOtherTest"
-            not in " ".join(stderr.getvalue().split())
-        ):
-            raise ConanException(
-                "The second package_install() failed without naming both projects."
-            )
-
         # The bare sample checks the configuration of a package whose package_create() passes no
-        # argument and that holds the GUI app alone.
-        cmake.configure(
-            variables={
-                "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "OFF",
-                "PACKAGE_BUILDER_TEST_BARE": "ON",
-            }
-        )
+        # argument and that holds the GUI app alone. The cache keeps every variable a configure
+        # sets, so each configure sets it.
+        cmake = CMake(self)
+        cmake.configure(variables={"PACKAGE_BUILDER_TEST_BARE": "ON"})
 
         # The full sample names the GUI app as its PRIMARY_TARGET, so the configure must not warn
         # that the package lacks one; nor, on Linux, that the app or the command-line tool has no
         # .desktop file. CMake writes warnings to stderr, which is captured to check and then
         # passed through.
         stderr = StringIO()
-        cmake.configure(
-            variables={
-                "PACKAGE_BUILDER_TEST_OTHER_INSTALLS": "OFF",
-                "PACKAGE_BUILDER_TEST_BARE": "OFF",
-            },
-            stderr=stderr,
-        )
+        cmake.configure(variables={"PACKAGE_BUILDER_TEST_BARE": "OFF"}, stderr=stderr)
         sys.stderr.write(stderr.getvalue())
         if "PRIMARY_TARGET is not set" in stderr.getvalue():
             raise ConanException("The configure warned that the package lacks a PRIMARY_TARGET.")
@@ -78,8 +41,9 @@ class CMakePackageBuilderTestConan(ConanFile):
 
     # The configure checks the package configuration; this checks the archive CPack stages from
     # it: one file named CPACK_PACKAGE_FILE_NAME, holding the listed app and tool and not the
-    # unlisted game, and with a dynamically linked MSVC runtime, that runtime beside them. On
-    # Windows it also compiles the one-click installer and checks the script it compiled.
+    # unlisted game, and with a dynamically linked MSVC runtime, that runtime beside them; and the
+    # archive of the other project's package. On Windows it also compiles the sample's one-click
+    # installer and checks the script it compiled.
     def test(self):
         self.run(f"cpack -G ZIP -C {self.settings.build_type}", cwd=self.build_folder)
         archives = list(Path(self.build_folder).glob("*.zip"))
@@ -102,6 +66,48 @@ class CMakePackageBuilderTestConan(ConanFile):
             for runtime in ("msvcp140.dll", "vcruntime140.dll"):
                 if not any(name.endswith(f"bin/{runtime}") for name in names):
                     raise ConanException(f"The archive lacks the C++ runtime's {runtime}: {names}")
+
+        # A project packages what its own directory installs, the directories below it included.
+        # The other project's package is the build tree's second, configured in its own binary
+        # directory: it holds its app and nothing of the sample's, whose rules lie outside that
+        # directory. The other project's directory lies inside the sample's, so the sample's
+        # package holds the other's app too. Each configuration names its own package.
+        other_folder = Path(self.build_folder) / "other_package"
+        identities = []
+        for folder in (Path(self.build_folder), other_folder):
+            config = folder / "CPackConfig.cmake"
+            if not config.is_file():
+                raise ConanException(f"No package configuration at {config}.")
+            variables = dict(
+                re.findall(r'^set\((CPACK_\w+) "(.*)"\)$', config.read_text(), flags=re.MULTILINE)
+            )
+            identities.append(
+                tuple(
+                    variables.get(f"CPACK_PACKAGE_{key}") for key in ("NAME", "VENDOR", "VERSION")
+                )
+            )
+        if identities != [
+            ("PackageBuilderTest", "Test Vendor", "1.0.0"),
+            ("PackageBuilderOtherTest", "Other Vendor", "2.0.0-other"),
+        ]:
+            raise ConanException(f"The packages carry the wrong identities: {identities}")
+        if not any(re.search(r"bin/other-app(\.exe)?$", name) for name in names):
+            raise ConanException(f"The sample's archive lacks the nested project's app: {names}")
+
+        self.run(f"cpack -G ZIP -C {self.settings.build_type}", cwd=str(other_folder))
+        other_archives = list(other_folder.glob("*.zip"))
+        if len(other_archives) != 1 or not re.fullmatch(
+            r"PackageBuilderOtherTest-2\.0\.0-other-[a-z]+-[a-z0-9_]+\.zip", other_archives[0].name
+        ):
+            raise ConanException(
+                f"Expected one PackageBuilderOtherTest archive, found {other_archives}."
+            )
+        with zipfile.ZipFile(other_archives[0]) as archive:
+            other_names = archive.namelist()
+        if not any(re.search(r"bin/other-app(\.exe)?$", name) for name in other_names):
+            raise ConanException(f"The other archive lacks its app: {other_names}")
+        if any(re.search(r"test-(app|game|tool)", name) for name in other_names):
+            raise ConanException(f"The other archive holds the sample's files: {other_names}")
 
         # Only makensis checks the one-click installer's template and the PATH plugin it loads, so
         # the test compiles the installer.

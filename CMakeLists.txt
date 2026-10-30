@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # Specify CXX as the language even though it is purely CMake to make cmake-conan happy
 project(
     PackageBuilder
-    VERSION 3.0.0
+    VERSION 4.0.0
     DESCRIPTION "Tools to assist with CMake/C++ package development"
     LANGUAGES C CXX)
 

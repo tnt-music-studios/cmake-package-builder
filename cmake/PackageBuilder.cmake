@@ -377,25 +377,8 @@ endfunction()
 # a COMPONENT out keeps that target's files out of every package while it still builds. A packaged
 # target's runtime dependencies ship in Runtime, so a list that packages a COMPONENT must name
 # Runtime too.
-#
-# ONE PACKAGE PER BUILD TREE
-# --------------------------
-# CPack writes one CPackConfig.cmake per build tree, and a package installs every install rule of
-# the tree, filtered only by component. A second package in the same tree would therefore carry the
-# first one's files, or replace its configuration, so a second package_install() call is an error.
 function(package_install)
     _package_check_initialized()
-
-    get_property(_installed_project GLOBAL PROPERTY PACKAGE_BUILDER_INSTALLED_PROJECT)
-    if(_installed_project)
-        message(
-            FATAL_ERROR
-                "PackageBuilder: package_install() for ${PROJECT_NAME} follows the one for "
-                "${_installed_project}, and a build tree makes one package. Configure each package "
-                "in a build tree of its own, or guard the subproject's package_install() with "
-                "PROJECT_IS_TOP_LEVEL.")
-    endif()
-    set_property(GLOBAL PROPERTY PACKAGE_BUILDER_INSTALLED_PROJECT "${PROJECT_NAME}")
 
     get_property(targets GLOBAL PROPERTY ${PROJECT_NAME}_TARGETS)
     _package_collect_runtime_targets(runtime_targets ${targets})
@@ -647,14 +630,27 @@ function(package_install)
     # NSIS, DEB, DragNDrop, etc.) from the install() rules defined above. Only install() rules whose
     # COMPONENT is listed in CPACK_COMPONENTS_ALL are included in the generated package.
     # -------------------------------------------------------------------
+    # CPack's defaults read the top-level project's CMAKE_PROJECT_*; a package reads its own
+    # PROJECT_*. CPack installs the package by running the install script of the project's binary
+    # directory, which includes the scripts of the directories below it and no other, so a project
+    # packages what its own directory installs; the component field ALL names CPACK_COMPONENTS_ALL
+    # as the components to install. The configuration files are written beside that script.
+    set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
+    set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+    set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+    set(CPACK_PACKAGE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
+    set(CPACK_INSTALL_CMAKE_PROJECTS "${PROJECT_BINARY_DIR};${PROJECT_NAME};ALL;/")
+    set(CPACK_OUTPUT_CONFIG_FILE "${PROJECT_BINARY_DIR}/CPackConfig.cmake")
+    set(CPACK_SOURCE_OUTPUT_CONFIG_FILE "${PROJECT_BINARY_DIR}/CPackSourceConfig.cmake")
+
     get_property(_package_version GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VERSION)
     get_property(_vendor GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VENDOR)
-    set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
     # Always set, so a package without a VENDOR names no publisher instead of CPack's default
     # "Humanity": the Windows Publisher entry is skipped when empty.
     set(CPACK_PACKAGE_VENDOR "${_vendor}")
     set(CPACK_PACKAGE_VERSION "${_package_version}")
-    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
     set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 
     # Normalize system name: linux-x86_64, macos-arm64, windows-x86_64, etc.

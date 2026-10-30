@@ -27,14 +27,14 @@ Add the following to your `conanfile.py`:
 
 ```python
 def requirements(self):
-    self.requires("cmake-package-builder/3.0.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+    self.requires("cmake-package-builder/4.0.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 ```
 
 Or in `conanfile.txt`:
 
 ```ini
 [requires]
-cmake-package-builder/3.0.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+cmake-package-builder/4.0.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 
 [generators]
 CMakeDeps
@@ -65,7 +65,7 @@ include(FetchContent)
 FetchContent_Declare(
     PackageBuilder
     GIT_REPOSITORY https://github.com/tnt-music-studios/cmake-package-builder
-    GIT_TAG v3.0.0
+    GIT_TAG v4.0.0
 )
 FetchContent_MakeAvailable(PackageBuilder)
 
@@ -136,7 +136,7 @@ It also takes the package's identity, all optional:
 | `MENU_LINKS` | See [Start Menu links](#start-menu-links). |
 | `VERSION` | See above. |
 
-A project's package is its own: what `package_create()` records is keyed by `PROJECT_NAME`, as the project's registered targets are, so every PackageBuilder function reads its own project's package and nothing another project's `package_create()` passed reaches it. An argument a project does not pass takes its default. A second `package_create()` in one project is a configure error. A workspace that configures several projects in one build tree gives each its own `package_create()`, and only one of them can package (see [Generate Package Install Logic](#generate-package-install-logic)).
+A project's package is its own: what `package_create()` records is keyed by `PROJECT_NAME`, as the project's registered targets are, so every PackageBuilder function reads its own project's package and nothing another project's `package_create()` passed reaches it. An argument a project does not pass takes its default. A second `package_create()` in one project is a configure error. A workspace that configures several projects in one build tree gives each its own `package_create()`, and each of them can package (see [Generate Package Install Logic](#generate-package-install-logic)).
 
 The Windows install directory is `<VENDOR>\<DISPLAY_NAME>` under Program Files and the registry key is `<DISPLAY_NAME>`. Neither carries the version, so a new version installs over the last one rather than beside it. The one-click installer's *Apps & features* entry names the install directory as its `InstallLocation`, the standard value through which another program finds an installed one; the classic wizard, CMake's own template, stores it under `Software\<VENDOR>\<DISPLAY_NAME>` instead. The uninstaller removes the `<VENDOR>` folder once the vendor's last product is gone, in both installer modes:
 
@@ -273,12 +273,40 @@ find_package(MyProject REQUIRED)
 target_link_libraries(myapp PRIVATE MyProject::mylib)
 ```
 
-A build tree makes one package, so `package_install()` may be called once per build tree: a second
-call, from any project, is a configure error naming both projects. CPack writes one
-`CPackConfig.cmake` per build tree and a package installs every install rule of the tree, so a
-second package would carry the first one's files. A repository of several products configures each
-product in a build tree of its own, and a subproject that packages itself when built alone guards
-its call:
+A build tree makes one package per project that calls `package_install()`. Each package's CPack
+configuration is written to its project's binary directory, as
+`<build>/<project's binary dir>/CPackConfig.cmake`, which for the top-level project is
+`<build>/CPackConfig.cmake`. A package holds what its project's own directory installs: the install
+rules of that directory and of every directory below it, filtered by
+[component](#install-components). An install rule outside every packaging project's directory
+therefore ships in no package, and a project whose directory holds another packaging project's
+directory also carries that project's install rules. A repository of several products keeps their
+packages apart by giving each product a sibling directory under a top-level project that packages
+nothing itself:
+
+```cmake
+# The workspace's CMakeLists.txt, which packages nothing.
+project(MyWorkspace LANGUAGES CXX)
+find_package(PackageBuilder REQUIRED)
+include(PackageBuilder)
+add_subdirectory(common) # Shared code: an install rule here ships in neither package.
+add_subdirectory(editor) # project(MyEditor ...), package_create(), package_install()
+add_subdirectory(game)   # project(MyGame ...), package_create(), package_install()
+```
+
+```sh
+cpack --config build/editor/CPackConfig.cmake
+cpack --config build/game/CPackConfig.cmake
+```
+
+CMake creates its `package` build target only when the top-level binary directory holds a
+`CPackConfig.cmake`, that is, only when the top-level project packages. A workspace like the one
+above has no `package` target at all, and the package of a project below the top level is made with
+`cpack --config`.
+
+A dependency subproject that packages itself when built alone may keep its `package_install()` out
+of a consumer's build tree. The consumer then configures no package for it, and its package carries
+none of the dependency's files, since `package_install()` is what states their install rules:
 
 ```cmake
 if(PROJECT_IS_TOP_LEVEL)
@@ -302,9 +330,12 @@ A project with no executable, shared library or module library gets install rule
 configuration.
 
 `package_install()` includes `CPack` itself, so other `CPACK_*` variables set before the call reach
-CPack. The ones PackageBuilder sets from the package's identity, version, components, generators and
-Windows shortcuts and icons overwrite any value you set; `CPACK_NSIS_CREATE_ICONS_EXTRA` and
-`CPACK_NSIS_DELETE_ICONS_EXTRA` are appended to.
+CPack. The ones PackageBuilder sets overwrite any value you set: the package's identity (its name,
+vendor, version, description and homepage, from the project's own `project()` and
+`package_create()` calls, where CPack's defaults read the top-level project's), its components,
+generators, configuration files, the directory it installs from, and its Windows shortcuts and
+icons. `CPACK_NSIS_CREATE_ICONS_EXTRA` and `CPACK_NSIS_DELETE_ICONS_EXTRA` are appended to.
+`CPACK_DEBIAN_PACKAGE_HOMEPAGE` still overrides the homepage in the Debian package.
 
 A Debian package must name a maintainer. Set `CPACK_PACKAGE_CONTACT` (or
 `CPACK_DEBIAN_PACKAGE_MAINTAINER`, which takes precedence) before `package_install()`, in Debian's
@@ -643,10 +674,10 @@ Then set `Icon=my_app` in your `.desktop` file, without a file extension.
 
 ## Versioning
 
-From 2.0.0 on, every breaking change bumps the major version, so a pin to any 3.x release can move
-to a later 3.x without changes to the consuming project. The installed
+From 2.0.0 on, every breaking change bumps the major version, so a pin to any 4.x release can move
+to a later 4.x without changes to the consuming project. The installed
 `PackageBuilderConfigVersion.cmake` uses `SameMajorVersion` to the same effect:
-`find_package(PackageBuilder 3)` accepts any 3.x and no 2.x.
+`find_package(PackageBuilder 4)` accepts any 4.x and no 3.x.
 
 2.0.3 is a bug fix within that promise: a command-line (console) executable no longer gets a Windows
 Start Menu entry or default desktop shortcut, which only opened a console window, and a
@@ -673,6 +704,17 @@ project and a second `package_install()` in one build tree are configure errors.
 installer's *Apps & features* entry now carries `InstallLocation`, the install directory (see
 [Create The Package](#create-the-package)).
 
+4.0.0 lets a build tree make one package per project that calls `package_install()`, where 3.0.0
+made a second call a configure error; no call changes. Each package's CPack configuration is written
+to its project's binary directory, the package holds what that directory installs, and its identity
+is read from its own project, never the top-level one (see
+[Generate Package Install Logic](#generate-package-install-logic)). A top-level project's
+configuration stays `<build>/CPackConfig.cmake`, installs the whole tree and keeps the `package`
+build target, as before. A project below the top level that packaged under 3.x is what breaks: its
+configuration moves, its package shrinks to what its own directory installs, and the build tree
+has no `package` target unless the top-level project packages too (see
+[Upgrading to 4.0.0](#upgrading-to-400)).
+
 Before 2.0.0, two minor releases broke existing builds:
 
 - **1.6.0** renamed `package_write_version_resource()`, added in 1.5.0, to
@@ -687,13 +729,32 @@ Before 2.0.0, two minor releases broke existing builds:
 1.8.0 broke only a configuration 1.7.0 had just made possible: a component list that packages a
 target's `COMPONENT` must name `Runtime` too.
 
+### Upgrading to 4.0.0
+
+A build tree whose only `package_install()` call is the top-level project's needs no change.
+Otherwise:
+
+- A project below the top level writes its CPack configuration to
+  `<build>/<project's binary dir>/CPackConfig.cmake`, where 3.x wrote `<build>/CPackConfig.cmake`.
+  Point `cpack --config` at the new path, and delete the old file from a build tree that 3.x
+  configured, which keeps it otherwise.
+- That project's package holds what its own directory installs, where it held every install rule of
+  the tree: move an install rule it needs from outside its directory into it.
+- A build tree whose top-level project does not package has no `package` build target; make each
+  package with `cpack --config` (see
+  [Generate Package Install Logic](#generate-package-install-logic)).
+- `CPACK_INSTALL_CMAKE_PROJECTS`, `CPACK_OUTPUT_CONFIG_FILE`, `CPACK_SOURCE_OUTPUT_CONFIG_FILE`,
+  `CPACK_PACKAGE_HOMEPAGE_URL` and `CPACK_PACKAGE_VERSION_MAJOR`, `_MINOR` and `_PATCH` are now
+  set by PackageBuilder, so a value the caller set is overwritten. The homepage comes from
+  `project(HOMEPAGE_URL)`.
+
 ### Upgrading to 3.0.0
 
 A project that calls `package_create()` and `package_install()` once each needs no change. Otherwise:
 
-- A build tree that called `package_install()` more than once now fails to configure. Its packages
-  were never separate: each installed every install rule of the tree. Configure each package in a
-  build tree of its own, or guard a subproject's call with `PROJECT_IS_TOP_LEVEL` (see
+- A build tree that called `package_install()` more than once made packages that were never
+  separate: each installed every install rule of the tree. From 4.0.0 each such project's package
+  holds what its own directory installs (see
   [Generate Package Install Logic](#generate-package-install-logic)).
 - A project's package is its own: nothing another project's `package_create()` passed reaches it.
   A project that calls a PackageBuilder function now calls `package_create()` itself; one that
