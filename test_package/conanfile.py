@@ -42,8 +42,8 @@ class CMakePackageBuilderTestConan(ConanFile):
     # The configure checks the package configuration; this checks the archive CPack stages from
     # it: one file named CPACK_PACKAGE_FILE_NAME, holding the listed app and tool and not the
     # unlisted game, and with a dynamically linked MSVC runtime, that runtime beside them; and the
-    # archive of the other project's package. On Windows it also compiles the sample's one-click
-    # installer and checks the script it compiled.
+    # archive of the other project's package. On Windows it also compiles both packages' one-click
+    # installers and checks the scripts they compiled.
     def test(self):
         self.run(f"cpack -G ZIP -C {self.settings.build_type}", cwd=self.build_folder)
         archives = list(Path(self.build_folder).glob("*.zip"))
@@ -66,6 +66,10 @@ class CMakePackageBuilderTestConan(ConanFile):
             for runtime in ("msvcp140.dll", "vcruntime140.dll"):
                 if not any(name.endswith(f"bin/{runtime}") for name in names):
                     raise ConanException(f"The archive lacks the C++ runtime's {runtime}: {names}")
+        if self.settings.os == "Windows" and not any(
+            name.endswith("bin/LICENSE.txt") for name in names
+        ):
+            raise ConanException(f"The archive lacks the licence: {names}")
 
         # A project packages what its own directory installs, the directories below it included.
         # The other project's package is the build tree's second, configured in its own binary
@@ -110,23 +114,31 @@ class CMakePackageBuilderTestConan(ConanFile):
             raise ConanException(f"The other archive holds the sample's files: {other_names}")
 
         # Only makensis checks the one-click installer's template and the PATH plugin it loads, so
-        # the test compiles the installer.
+        # the test compiles the installers.
         if self.settings.os == "Windows":
-            self.run(f"cpack -G NSIS -C {self.settings.build_type}", cwd=self.build_folder)
-            installers = list(Path(self.build_folder).glob("PackageBuilderTest-1.0.0-*.exe"))
-            if len(installers) != 1:
-                raise ConanException(
-                    f"Expected one PackageBuilderTest installer, found {installers}."
-                )
+            installer = self._compile_installer(Path(self.build_folder), "PackageBuilderTest-1.0.0")
 
             # The uninstall entry carries the install directory as InstallLocation, through which
             # another program finds the installation.
-            scripts = list(Path(self.build_folder).glob("_CPack_Packages/*/NSIS/project.nsi"))
-            if len(scripts) != 1 or not re.search(
+            if not re.search(
                 r'Push "InstallLocation"\s+Push "\$INSTDIR"\s+Call ConditionalAddToRegistry',
-                scripts[0].read_text(),
+                installer,
             ):
-                raise ConanException(f"The installer writes no InstallLocation: {scripts}")
+                raise ConanException("The installer writes no InstallLocation.")
+
+            # The sample's licence needs no acceptance, so its installer shows no licence page. The
+            # other project's requires acceptance, so its installer shows the page before the
+            # install progress.
+            if "!insertmacro MUI_PAGE_LICENSE" in installer:
+                raise ConanException("The installer shows a licence page nothing requires.")
+            other_installer = self._compile_installer(
+                other_folder, "PackageBuilderOtherTest-2.0.0-other"
+            )
+            if not re.search(
+                r"!insertmacro MUI_PAGE_LICENSE [^\n]*\s+!insertmacro MUI_PAGE_INSTFILES",
+                other_installer,
+            ):
+                raise ConanException("The other installer shows no licence page before installing.")
 
         # No executable links a library the resolver keeps, so the archive cannot show where their
         # dependencies go; the install script names the component of each dependency rule. Each
@@ -150,3 +162,15 @@ class CMakePackageBuilderTestConan(ConanFile):
             raise ConanException(
                 f"Dependency rules are in the wrong components: {dependency_components}"
             )
+
+    # Compiles the NSIS installer of the package configured in folder, checks that it is the one
+    # installer named file_name_prefix there, and returns the script makensis compiled.
+    def _compile_installer(self, folder, file_name_prefix):
+        self.run(f"cpack -G NSIS -C {self.settings.build_type}", cwd=str(folder))
+        installers = list(folder.glob(f"{file_name_prefix}-*.exe"))
+        if len(installers) != 1:
+            raise ConanException(f"Expected one {file_name_prefix} installer, found {installers}.")
+        scripts = list(folder.glob("_CPack_Packages/*/NSIS/project.nsi"))
+        if len(scripts) != 1:
+            raise ConanException(f"Expected one installer script in {folder}, found {scripts}.")
+        return scripts[0].read_text()

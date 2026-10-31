@@ -1,9 +1,11 @@
 ; CPack one-click installer template.
 ;
 ; This is a stripped version of CMake's default NSIS.template.in:
-;   - All interactive wizard pages are removed (Welcome, License, InstallOptions,
-;     Directory, Start Menu folder selection, Components, Finish).
-;   - Only the install-progress page (MUI_PAGE_INSTFILES) is shown.
+;   - The interactive wizard pages are removed (Welcome, InstallOptions, Directory, Start Menu
+;     folder selection, Components, Finish).
+;   - A package that requires licence acceptance shows the License page (CPack's
+;     CPACK_NSIS_LICENSE_PAGE, empty under CPACK_NSIS_IGNORE_LICENSE_PAGE); then only the
+;     install-progress page (MUI_PAGE_INSTFILES) is shown.
 ;   - AutoCloseWindow closes the installer automatically when done.
 ;   - The start menu folder defaults to the display name; no user prompt.
 ;   - Desktop shortcuts are handled unconditionally via CPACK_NSIS_CREATE_ICONS_EXTRA.
@@ -208,7 +210,8 @@ FunctionEnd
 
 ;--------------------------------
 ;Pages
-; One-click mode: show only the install-progress page. No user input required.
+; One-click mode: the License page when the package requires acceptance, then install progress.
+  @CPACK_NSIS_LICENSE_PAGE@
   !insertmacro MUI_PAGE_INSTFILES
 
   !insertmacro MUI_UNPAGE_INSTFILES

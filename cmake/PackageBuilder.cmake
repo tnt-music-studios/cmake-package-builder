@@ -139,11 +139,12 @@ endfunction()
 # MENU_LINKS adds Windows Start Menu links as <path> <label> pairs, the path relative to the install
 # directory or a URL; VERSION overrides the package version, which defaults to PROJECT_VERSION, with
 # that version plus a SemVer pre-release or build suffix (1.0.0-alpha); VENDOR names the publisher,
-# which also becomes the parent folder of the Windows install directory.
+# which also becomes the parent folder of the Windows install directory; REQUIRE_LICENSE_ACCEPTANCE
+# makes the Windows installer show the LICENSE and wait for the user to accept it before installing.
 function(package_create)
     cmake_parse_arguments(
-        PARSE_ARGV 0 PACKAGE_CREATE "" "PRIMARY_TARGET;DISPLAY_NAME;ICON;VERSION;VENDOR"
-        "DESKTOP_LINKS;MENU_LINKS")
+        PARSE_ARGV 0 PACKAGE_CREATE "REQUIRE_LICENSE_ACCEPTANCE"
+        "PRIMARY_TARGET;DISPLAY_NAME;ICON;VERSION;VENDOR" "DESKTOP_LINKS;MENU_LINKS")
 
     # A project describes one package, so it states its identity once.
     get_property(_package_created GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_CREATED)
@@ -164,6 +165,8 @@ function(package_create)
     # differs from none given (the PRIMARY_TARGET's).
     set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_MENU_LINKS "${PACKAGE_CREATE_MENU_LINKS}")
     set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_VENDOR "${PACKAGE_CREATE_VENDOR}")
+    set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_REQUIRE_LICENSE_ACCEPTANCE
+                                 "${PACKAGE_CREATE_REQUIRE_LICENSE_ACCEPTANCE}")
     set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_PRIMARY_TARGET
                                  "${PACKAGE_CREATE_PRIMARY_TARGET}")
     set_property(GLOBAL PROPERTY ${PROJECT_NAME}_PACKAGE_DISPLAY_NAME
@@ -652,6 +655,14 @@ function(package_install)
     set(CPACK_PACKAGE_VENDOR "${_vendor}")
     set(CPACK_PACKAGE_VERSION "${_package_version}")
     set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
+    # The licence is named even when no page shows it, since CPack would otherwise name its generic
+    # placeholder licence. Only a package whose licence must be accepted shows the licence page.
+    # CPack reads CPACK_NSIS_IGNORE_LICENSE_PAGE as set or not, so it is left undefined, never OFF.
+    get_property(_require_license_acceptance GLOBAL
+                 PROPERTY ${PROJECT_NAME}_PACKAGE_REQUIRE_LICENSE_ACCEPTANCE)
+    if(NOT _require_license_acceptance)
+        set(CPACK_NSIS_IGNORE_LICENSE_PAGE ON)
+    endif()
 
     # Normalize system name: linux-x86_64, macos-arm64, windows-x86_64, etc.
     string(TOLOWER "${CMAKE_SYSTEM_NAME}" _os)
@@ -800,6 +811,13 @@ function(package_install)
                     "${CPACK_PACKAGE_BUILDER_NSIS_BINDIR}\\${_primary_output_name}.exe")
             endif()
         endif()
+
+        # Every Windows package carries its licence, beside the executables it covers.
+        install(
+            FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            RENAME LICENSE.txt
+            COMPONENT Runtime)
 
         # -------------------------------------------------------------------
         # Collect the packaged GUI executables, the only ones that get shortcuts. An executable

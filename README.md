@@ -27,14 +27,14 @@ Add the following to your `conanfile.py`:
 
 ```python
 def requirements(self):
-    self.requires("cmake-package-builder/4.0.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+    self.requires("cmake-package-builder/5.0.0") #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 ```
 
 Or in `conanfile.txt`:
 
 ```ini
 [requires]
-cmake-package-builder/4.0.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
+cmake-package-builder/5.0.0 #recipe: https://github.com/tnt-music-studios/cmake-package-builder.git
 
 [generators]
 CMakeDeps
@@ -65,7 +65,7 @@ include(FetchContent)
 FetchContent_Declare(
     PackageBuilder
     GIT_REPOSITORY https://github.com/tnt-music-studios/cmake-package-builder
-    GIT_TAG v4.0.0
+    GIT_TAG v5.0.0
 )
 FetchContent_MakeAvailable(PackageBuilder)
 
@@ -122,7 +122,7 @@ This function performs essential validation before any targets are defined:
 - **Version verification:** Verifies that `PROJECT_VERSION` is set and fails with a fatal error if it is not. `PROJECT_VERSION` is typically set by specifying the version in the `project()` command.
 - **Package version:** The installers carry `PROJECT_VERSION` unless `VERSION` overrides it with that version plus an optional SemVer pre-release or build suffix, e.g. `package_create(VERSION 1.0.0-alpha)` under `project(MyProject VERSION 1.0.0)`; any other value is a fatal error. `project()` and the numeric platform version fields (Windows VERSIONINFO's `FILEVERSION` and `PRODUCTVERSION`, Apple plists) accept integers only, so they keep the numeric version while installer file names, displayed versions and the Windows version text fields carry the full one. Debian packages spell the suffix with `~` (`1.0.0~alpha`) so that a pre-release sorts before its final release.
 - **Description verification:** Verifies that `PROJECT_DESCRIPTION` is set and fails with a fatal error if it is not. Set via the `DESCRIPTION` argument in the `project()` command.
-- **License verification:** Verifies that a `LICENSE` file exists at the project root. This is required for CPack packaging.
+- **License verification:** Verifies that a `LICENSE` file exists at the project root. This is required for CPack packaging, and every Windows package installs it to `bin` as `LICENSE.txt`, beside the executables it covers.
 
 It also takes the package's identity, all optional:
 
@@ -135,6 +135,7 @@ It also takes the package's identity, all optional:
 | `DESKTOP_LINKS` | See [Desktop shortcuts and launchers](#desktop-shortcuts-and-launchers). |
 | `MENU_LINKS` | See [Start Menu links](#start-menu-links). |
 | `VERSION` | See above. |
+| `REQUIRE_LICENSE_ACCEPTANCE` | A flag for a package whose licence the user must accept before installing, such as a proprietary EULA: the Windows installer shows the `LICENSE` and installs only once the user clicks *I Agree*, in both [installer modes](#windows-one-click-installer). Without it, as suits a permissive licence, the installer shows no licence page. |
 
 A project's package is its own: what `package_create()` records is keyed by `PROJECT_NAME`, as the project's registered targets are, so every PackageBuilder function reads its own project's package and nothing another project's `package_create()` passed reaches it. An argument a project does not pass takes its default. A second `package_create()` in one project is a configure error. A workspace that configures several projects in one build tree gives each its own `package_create()`, and each of them can package (see [Generate Package Install Logic](#generate-package-install-logic)).
 
@@ -491,11 +492,13 @@ package_install()
 By default (`PACKAGE_BUILDER_WINDOWS_ONE_CLICK_INSTALLER ON`), the generated NSIS installer is
 **zero-interaction**: the user double-clicks the installer, it installs the application, creates
 the [desktop shortcuts](#desktop-shortcuts-and-launchers), and closes automatically. No wizard
-pages, no "Next" buttons, no path or directory choices.
+pages, no "Next" buttons, no path or directory choices. A package created with
+`REQUIRE_LICENSE_ACCEPTANCE` first shows its `LICENSE` and installs once the user clicks
+*I Agree*.
 
-When set to `OFF`, the installer reverts to CMake's classic NSIS wizard: Welcome, License, an
-options page (PATH and an opt-in desktop shortcut checkbox), Directory, Start Menu, Components
-(`Runtime` cannot be deselected), Install and Finish pages.
+When set to `OFF`, the installer reverts to CMake's classic NSIS wizard: Welcome, License (only
+with `REQUIRE_LICENSE_ACCEPTANCE`), an options page (PATH and an opt-in desktop shortcut checkbox),
+Directory, Start Menu, Components (`Runtime` cannot be deselected), Install and Finish pages.
 
 In both modes, an installer that finds an earlier installation under the same registry key first
 asks whether to uninstall it.
@@ -518,8 +521,8 @@ package_install()
 
 | Mode | Desktop shortcut | PATH modification | Wizard pages |
 |------|-----------------|-------------------|--------------|
-| `ON` (default) | Created for the `DESKTOP_LINKS` targets without asking | `bin` added to the machine PATH when the package holds a command-line tool | None, only install progress |
-| `OFF` | Opt-in checkbox during install | User-controlled via installer page | Welcome, License, options, Directory, Start Menu, Components, Finish |
+| `ON` (default) | Created for the `DESKTOP_LINKS` targets without asking | `bin` added to the machine PATH when the package holds a command-line tool | License (with `REQUIRE_LICENSE_ACCEPTANCE`), then install progress |
+| `OFF` | Opt-in checkbox during install | User-controlled via installer page | Welcome, License (with `REQUIRE_LICENSE_ACCEPTANCE`), options, Directory, Start Menu, Components, Finish |
 
 #### Providing a custom NSIS template
 
@@ -540,10 +543,12 @@ PackageBuilder's lookup order for `NSIS.template.in` (highest to lowest priority
 
 A custom template must expand `@CPACK_NSIS_DELETE_ICONS_EXTRA@` after its uninstaller removes
 `$INSTDIR`, as PackageBuilder's template and CMake's both do: PackageBuilder removes the one-click
-desktop shortcuts and the empty vendor folder through it. In one-click mode it must also expand
-`@CPACK_NSIS_CREATE_ICONS_EXTRA@`, through which PackageBuilder creates the desktop shortcuts, and
-add `$INSTDIR\@CPACK_PACKAGE_BUILDER_NSIS_BINDIR@` to PATH when `@CPACK_NSIS_MODIFY_PATH@` is `ON`,
-and remove it again on uninstall;
+desktop shortcuts and the empty vendor folder through it. It must expand `@CPACK_NSIS_LICENSE_PAGE@`
+among its pages, before `MUI_PAGE_INSTFILES`: CPack fills it with the License page for a package
+created with `REQUIRE_LICENSE_ACCEPTANCE` and leaves it empty otherwise. In one-click mode it must
+also expand `@CPACK_NSIS_CREATE_ICONS_EXTRA@`, through which PackageBuilder creates the desktop
+shortcuts, and add `$INSTDIR\@CPACK_PACKAGE_BUILDER_NSIS_BINDIR@` to PATH when
+`@CPACK_NSIS_MODIFY_PATH@` is `ON`, and remove it again on uninstall;
 `@CPACK_PACKAGE_BUILDER_NSIS_PLUGIN_DIR@` names the directory holding PackageBuilder's EnVar plugin
 for `!addplugindir`, as its own template does.
 
@@ -674,10 +679,10 @@ Then set `Icon=my_app` in your `.desktop` file, without a file extension.
 
 ## Versioning
 
-From 2.0.0 on, every breaking change bumps the major version, so a pin to any 4.x release can move
-to a later 4.x without changes to the consuming project. The installed
+From 2.0.0 on, every breaking change bumps the major version, so a pin to any 5.x release can move
+to a later 5.x without changes to the consuming project. The installed
 `PackageBuilderConfigVersion.cmake` uses `SameMajorVersion` to the same effect:
-`find_package(PackageBuilder 4)` accepts any 4.x and no 3.x.
+`find_package(PackageBuilder 5)` accepts any 5.x and no 4.x.
 
 2.0.3 is a bug fix within that promise: a command-line (console) executable no longer gets a Windows
 Start Menu entry or default desktop shortcut, which only opened a console window, and a
@@ -715,6 +720,13 @@ configuration moves, its package shrinks to what its own directory installs, and
 has no `package` target unless the top-level project packages too (see
 [Upgrading to 4.0.0](#upgrading-to-400)).
 
+5.0.0 shows a Windows installer's License page only for a package whose `package_create()` passes
+`REQUIRE_LICENSE_ACCEPTANCE`, in both installer modes: the one-click installer gains the page, and
+the classic wizard, which showed it for every package, now drops it for a package without the flag.
+Every Windows package now installs its `LICENSE` as `bin/LICENSE.txt` (see
+[Create The Package](#create-the-package)). A classic-wizard package that should keep its License
+page is what breaks (see [Upgrading to 5.0.0](#upgrading-to-500)).
+
 Before 2.0.0, two minor releases broke existing builds:
 
 - **1.6.0** renamed `package_write_version_resource()`, added in 1.5.0, to
@@ -728,6 +740,15 @@ Before 2.0.0, two minor releases broke existing builds:
 
 1.8.0 broke only a configuration 1.7.0 had just made possible: a component list that packages a
 target's `COMPONENT` must name `Runtime` too.
+
+### Upgrading to 5.0.0
+
+A package whose licence asks for no acceptance needs no change. A package whose installer must show
+its licence and wait for *I Agree*, as a proprietary end-user licence agreement does, passes
+`REQUIRE_LICENSE_ACCEPTANCE` to `package_create()`; under 4.x the classic wizard showed the page
+without it and the one-click installer could not show it at all. A custom NSIS template must expand
+`@CPACK_NSIS_LICENSE_PAGE@` before `MUI_PAGE_INSTFILES` (see
+[Windows one-click installer](#windows-one-click-installer)).
 
 ### Upgrading to 4.0.0
 

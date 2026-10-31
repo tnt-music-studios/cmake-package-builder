@@ -25,7 +25,8 @@ package_create(
     "bin/other.html"
     "Other Guide"
     VERSION
-    2.0.0-other)
+    2.0.0-other
+    REQUIRE_LICENSE_ACCEPTANCE)
 
 # A complete package of its own, the sample's app mirrored, so that its package_install() succeeds
 # on every platform.
